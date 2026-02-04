@@ -1,0 +1,22 @@
+# EPU scraper cache and state (too large to commit)
+out_fast_epu_scrape/cache/
+out_fast_epu_scrape/state/
+out_irish_epu_oct2025/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
