@@ -113,12 +113,18 @@ def calculate_domestic_epu(main_epu_df):
     print("=" * 70)
 
     # Load the foreign country EPU data
+    # Try updated file first (downloaded from policyuncertainty.com), then fall back to original
     try:
-        foreign_epu = pd.read_excel('dataset_est_domestic.xlsx')
+        foreign_epu = pd.read_excel('dataset_est_domestic_updated.xlsx')
+        print("Using updated foreign EPU data (from policyuncertainty.com)")
     except FileNotFoundError:
-        print("WARNING: dataset_est_domestic.xlsx not found.")
-        print("Cannot calculate domestic EPU without foreign country data.")
-        return None
+        try:
+            foreign_epu = pd.read_excel('dataset_est_domestic.xlsx')
+            print("Using original foreign EPU data")
+        except FileNotFoundError:
+            print("WARNING: No foreign EPU data file found.")
+            print("Cannot calculate domestic EPU without foreign country data.")
+            return None
 
     print(f"\nLoaded foreign EPU data: {foreign_epu.shape[0]} rows, {foreign_epu.shape[1]} columns")
 
@@ -126,7 +132,7 @@ def calculate_domestic_epu(main_epu_df):
     date_col = foreign_epu.columns[0]  # First column is date
 
     # Columns to exclude (as per README)
-    exclude_cols = [date_col, 'Ireland_Rice', 'GEPU_current', 'GEPU_ppp',
+    exclude_cols = [date_col, 'Ireland_Rice', 'Ireland_new', 'GEPU_current', 'GEPU_ppp',
                     'Singapore', 'SCMP China', 'Mainland China', 'Sweden', 'Mexico']
 
     # Get available columns for PCA
@@ -172,9 +178,10 @@ def calculate_domestic_epu(main_epu_df):
     pca_mean = pca_df['weighted_pca'].mean()
     pca_std = pca_df['weighted_pca'].std()
 
-    # Get Ireland_Rice from original data if available
-    if 'Ireland_Rice' in foreign_epu.columns:
-        ireland_epu = foreign_epu['Ireland_Rice'].values
+    # Get Ireland EPU from original data if available (for scaling reference)
+    ireland_col = 'Ireland_Rice' if 'Ireland_Rice' in foreign_epu.columns else 'Ireland_new' if 'Ireland_new' in foreign_epu.columns else None
+    if ireland_col:
+        ireland_epu = foreign_epu[ireland_col].values
         gepu_mean = np.nanmean(ireland_epu)
         gepu_std = np.nanstd(ireland_epu)
         pca_df['weighted_pca_scaled'] = (pca_df['weighted_pca'] - pca_mean) / pca_std * gepu_std + gepu_mean
@@ -184,84 +191,92 @@ def calculate_domestic_epu(main_epu_df):
     # Now merge with main EPU data
     main_epu_df['date'] = pd.to_datetime(main_epu_df['month'])
 
-    # For the months we have scraped data, we'll calculate domestic EPU
-    # We need to extend the weighted PCA series or use only overlapping periods
+    # Create lagged PCA variables using all available historical data
+    pca_df = pca_df.sort_values('date')
+    pca_df['lag1_pca'] = pca_df['weighted_pca_scaled'].shift(1)
+    pca_df['lag2_pca'] = pca_df['weighted_pca_scaled'].shift(2)
+    pca_df['lag3_pca'] = pca_df['weighted_pca_scaled'].shift(3)
 
-    # Merge on date (monthly)
+    # APPROACH: Use official Ireland EPU from policyuncertainty.com to estimate
+    # the regression relationship, then apply to newer scraped months
+
+    # Get Ireland EPU from the foreign data
+    if ireland_col:
+        pca_df['ireland_official'] = foreign_epu[ireland_col].values
+    else:
+        print("\nNo Ireland EPU column found in foreign data.")
+        return None
+
+    # Remove rows with NaN (from lagging and missing data)
+    pca_clean = pca_df.dropna(subset=['lag1_pca', 'lag2_pca', 'lag3_pca', 'ireland_official'])
+
+    print(f"\nHistorical data available for regression: {len(pca_clean)} months")
+    print(f"Date range: {pca_clean['date'].min()} to {pca_clean['date'].max()}")
+
+    if len(pca_clean) < 50:
+        print("Insufficient historical data for reliable regression.")
+        return None
+
+    # Estimate regression using historical official Ireland EPU data
+    from sklearn.linear_model import LinearRegression
+
+    X_hist = pca_clean[['weighted_pca_scaled', 'lag1_pca', 'lag2_pca', 'lag3_pca']]
+    y_hist = pca_clean['ireland_official']
+
+    model = LinearRegression()
+    model.fit(X_hist, y_hist)
+
+    print(f"Regression R² (historical): {model.score(X_hist, y_hist):.4f}")
+    print(f"Coefficients: PCA={model.coef_[0]:.4f}, Lag1={model.coef_[1]:.4f}, Lag2={model.coef_[2]:.4f}, Lag3={model.coef_[3]:.4f}")
+
+    # Calculate residuals for historical data to get scaling parameters
+    pca_clean = pca_clean.copy()
+    pca_clean['predicted'] = model.predict(X_hist)
+    pca_clean['residual'] = pca_clean['ireland_official'] - pca_clean['predicted']
+
+    resid_mean = pca_clean['residual'].mean()
+    resid_std = pca_clean['residual'].std()
+    print(f"Historical residual stats: mean={resid_mean:.2f}, std={resid_std:.2f}")
+
+    # Now apply to scraped months
+    # Merge scraped data with PCA data
     pca_df['month'] = pca_df['date'].dt.to_period('M').dt.to_timestamp()
     main_epu_df['month_dt'] = pd.to_datetime(main_epu_df['month'])
 
-    # Check overlap
-    scraped_months = set(main_epu_df['month_dt'])
-    pca_months = set(pca_df['month'])
-    overlap = scraped_months.intersection(pca_months)
-
-    print(f"\nScraped months: {len(scraped_months)}")
-    print(f"PCA data months: {len(pca_months)}")
-    print(f"Overlapping months: {len(overlap)}")
-
-    if len(overlap) == 0:
-        print("\nWARNING: No overlapping months between scraped data and foreign EPU data.")
-        print("The foreign EPU data ends at: ", pca_df['date'].max())
-        print("Scraped data starts at: ", main_epu_df['date'].min())
-        print("\nTo calculate domestic EPU, you need to:")
-        print("1. Download updated country-level data from policyuncertainty.com")
-        print("2. Update dataset_est_domestic.xlsx with recent months")
-
-        # Return None for domestic EPU, but we can still estimate using a simplified approach
-        print("\nUsing simplified domestic calculation (without foreign EPU adjustment)...")
-
-        # Simple approach: domestic = main EPU (no foreign adjustment available)
-        # In practice, you'd want the full methodology with updated foreign data
-        return None
-
-    # If we have overlap, proceed with regression
     merged = main_epu_df.merge(
-        pca_df[['month', 'weighted_pca_scaled']],
+        pca_df[['month', 'weighted_pca_scaled', 'lag1_pca', 'lag2_pca', 'lag3_pca']],
         left_on='month_dt',
         right_on='month',
-        how='inner'
+        how='left'
     )
 
-    if len(merged) < 5:
-        print(f"\nInsufficient overlapping data ({len(merged)} months) for regression.")
+    # For months where we have PCA data, calculate domestic EPU
+    has_pca = merged.dropna(subset=['weighted_pca_scaled', 'lag1_pca', 'lag2_pca', 'lag3_pca'])
+
+    if len(has_pca) == 0:
+        print("\nNo scraped months have PCA data available.")
         return None
 
-    # Create lagged variables (3 lags as per R script)
-    merged = merged.sort_values('month_dt')
-    merged['lag1_pca'] = merged['weighted_pca_scaled'].shift(1)
-    merged['lag2_pca'] = merged['weighted_pca_scaled'].shift(2)
-    merged['lag3_pca'] = merged['weighted_pca_scaled'].shift(3)
+    print(f"\nScraped months with PCA data: {len(has_pca)}")
 
-    # Remove NaN rows from lagging
-    merged_clean = merged.dropna(subset=['lag1_pca', 'lag2_pca', 'lag3_pca'])
+    # Calculate predicted "foreign-driven" EPU using our scaled scraped EPU
+    has_pca = has_pca.copy()
+    X_new = has_pca[['weighted_pca_scaled', 'lag1_pca', 'lag2_pca', 'lag3_pca']]
+    has_pca['foreign_component'] = model.predict(X_new)
 
-    if len(merged_clean) < 5:
-        print(f"\nInsufficient data after lagging ({len(merged_clean)} months).")
-        return None
+    # Domestic EPU = Actual EPU - Foreign-driven component
+    # Since our scraped EPU is scaled, we calculate residual similarly
+    has_pca['domestic_raw'] = has_pca['epu_scaled'] - has_pca['foreign_component']
 
-    # Run regression: Irish_EPU ~ weighted_pca + lag1 + lag2 + lag3
-    from sklearn.linear_model import LinearRegression
+    # Scale domestic EPU to historical residual distribution, then to standard EPU scale
+    has_pca['domestic_epu'] = (has_pca['domestic_raw'] - resid_mean) / resid_std * NEW_STDEV + NEW_MEAN
 
-    X = merged_clean[['weighted_pca_scaled', 'lag1_pca', 'lag2_pca', 'lag3_pca']]
-    y = merged_clean['epu_scaled']
+    print(f"\nDomestic EPU calculated for {len(has_pca)} months:")
+    for _, row in has_pca.iterrows():
+        print(f"  {row['month_x']}: Main={row['epu_scaled']:.2f}, Domestic={row['domestic_epu']:.2f}")
 
-    model = LinearRegression()
-    model.fit(X, y)
-
-    # Get residuals = domestic uncertainty
-    merged_clean['domestic_epu'] = y - model.predict(X)
-
-    # Scale domestic EPU to have similar properties to main EPU
-    domestic_mean = merged_clean['domestic_epu'].mean()
-    domestic_std = merged_clean['domestic_epu'].std()
-    merged_clean['domestic_epu_scaled'] = (merged_clean['domestic_epu'] - domestic_mean) / domestic_std * NEW_STDEV + NEW_MEAN
-
-    print(f"\nRegression R²: {model.score(X, y):.4f}")
-    print(f"Domestic EPU calculated for {len(merged_clean)} months")
-
-    return merged_clean[['month_x', 'epu_scaled', 'domestic_epu_scaled']].rename(
-        columns={'month_x': 'month', 'epu_scaled': 'main_epu', 'domestic_epu_scaled': 'domestic_epu'}
+    return has_pca[['month_x', 'epu_scaled', 'domestic_epu']].rename(
+        columns={'month_x': 'month', 'epu_scaled': 'main_epu'}
     )
 
 
