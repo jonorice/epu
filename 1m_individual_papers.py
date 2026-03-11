@@ -1,19 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Irish EPU, October 2025 only, staged by paper, restart safe, exports Excel after each run.
+Low-level Irish newspaper scraper used by the Irish EPU update workflow.
 
-How to use
-1) Run Irish Times first
-   RUN_SOURCES = ["IrishTimes"]
-   Then run the script. It writes OUTDIR/irish_epu_2025-10.xlsx
+This file is still runnable on its own, but the maintained repo entrypoint is
+`update_latest_epu.py`, which imports and overrides these settings at runtime.
 
-2) Run Irish Examiner next
-   Change RUN_SOURCES = ["IrishExaminer"]
-   Run again. It reuses the same SQLite state DB and updates the same Excel workbook.
-
-3) Run Irish Independent last
-   Change RUN_SOURCES = ["IrishIndependent"]
-   Run again.
+If you do run this file directly:
+1) set `START_DATE`, `END_DATE`, `OUTDIR`, and `EXCEL_FILENAME`;
+2) run one source at a time by changing `RUN_SOURCES`;
+3) rerun until the pending count is zero.
 
 Restart safety
 - Progress is stored in OUTDIR/state/irish_epu_state.sqlite
@@ -55,7 +50,7 @@ except ModuleNotFoundError:
 # Configuration
 # =========================
 
-# October 2025 only
+# Sample defaults only. The maintained updater overrides these at runtime.
 START_DATE = "2025-12-01"
 END_DATE = "2025-12-31"
 

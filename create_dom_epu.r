@@ -1,4 +1,9 @@
 
+# Legacy exploratory script.
+# The maintained update path is now `update_latest_epu.py`, which rebuilds the
+# domestic series from the latest all-country file and writes the workbook
+# outputs in place. Keep this file as a reference only.
+
 rm(list = ls())
 
 
